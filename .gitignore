@@ -1,0 +1,22 @@
+.DS_Store
+
+# SwiftPM
+.build/
+.build-*/
+.swiftpm/
+
+# Xcode
+DerivedData/
+*.xcuserdata/
+*.xcuserstate
+
+# Local app bundles and signing output
+*.app/
+*.dSYM/
+
+# Local tool/config state
+.claude/
+
+# Logs and temporary files
+*.log
+tmp/
