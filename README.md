@@ -6,6 +6,8 @@ When a focus lock is active, the app blocks common Space-switching shortcuts and
 
 An escape hatch code is shown during each session. Typing the four-digit code in the menu bar panel unlocks focus early.
 
+During an active lock, Desktop Focus temporarily disables macOS's horizontal trackpad Space-swipe preference and restores the previous setting on unlock. If the app exits unexpectedly, it restores the saved preference on the next launch.
+
 ## Requirements
 
 - macOS 13 or newer
@@ -45,7 +47,7 @@ swift test
 
 ## Notes
 
-macOS does not provide a public API to fully forbid every possible Space change. Desktop Focus blocks the common public event paths before the switch happens and keeps a snap-back fallback for anything macOS still allows through.
+macOS does not provide a public API to fully forbid every possible Space change. Desktop Focus blocks the common public event paths before the switch happens, temporarily disables the system horizontal trackpad Space-swipe setting while locked, and keeps a snap-back fallback for anything macOS still allows through.
 
 ## License
 
