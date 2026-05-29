@@ -102,7 +102,6 @@ class LockManager: ObservableObject {
 
     var cancellables = Set<AnyCancellable>()
 
-    private let systemGestureSettings = SystemGestureSettings()
     private var lockEndDate: Date?
     private var penaltyEndDate: Date?
     private var anchorWindow: NSWindow?
@@ -126,7 +125,6 @@ class LockManager: ObservableObject {
         setupSpaceObserver()
         setupEventTap()
         setupSwipeMonitors()
-        systemGestureSettings.suspendHorizontalSpaceSwipes()
         startTimer()
     }
 
@@ -244,8 +242,6 @@ class LockManager: ObservableObject {
             NSEvent.removeMonitor(monitor)
             globalSwipeMonitor = nil
         }
-
-        systemGestureSettings.restoreHorizontalSpaceSwipes()
 
         // Hide instead of close — isReleasedWhenClosed=false means ARC handles release
         anchorWindow?.orderOut(nil)
