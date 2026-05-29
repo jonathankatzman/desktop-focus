@@ -86,12 +86,14 @@ final class SystemGestureSettings {
         let defaults = UserDefaults(suiteName: key.domain)
         defaults?.set(value, forKey: key.name)
         defaults?.synchronize()
+        run("/usr/bin/defaults", "write", key.domain, key.name, "-int", "\(value)")
     }
 
     private func remove(_ key: PreferenceKey) {
         let defaults = UserDefaults(suiteName: key.domain)
         defaults?.removeObject(forKey: key.name)
         defaults?.synchronize()
+        run("/usr/bin/defaults", "delete", key.domain, key.name)
     }
 
     private func synchronize() {
@@ -99,11 +101,17 @@ final class SystemGestureSettings {
             UserDefaults(suiteName: domain)?.synchronize()
             CFPreferencesAppSynchronize(domain as CFString)
         }
+        run("/usr/bin/killall", "cfprefsd")
 
         DistributedNotificationCenter.default().post(
             name: Notification.Name("com.apple.MultitouchSupport.preferencesChanged"),
             object: nil
         )
+
+        // Dock owns Mission Control/Spaces gestures and can cache this setting.
+        // Restarting it is heavy-handed, but it is the reliable way to make the
+        // horizontal Space-swipe preference take effect immediately.
+        run("/usr/bin/killall", "Dock")
     }
 
     private func writeBackup(_ saved: [SavedPreference]) {
@@ -132,6 +140,23 @@ final class SystemGestureSettings {
 
             let value = hasValue ? item["value"] as? Int : nil
             return SavedPreference(key: PreferenceKey(domain: domain, name: name), value: value)
+        }
+    }
+
+    @discardableResult
+    private func run(_ executable: String, _ arguments: String...) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.standardOutput = nil
+        process.standardError = nil
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            return false
         }
     }
 }
