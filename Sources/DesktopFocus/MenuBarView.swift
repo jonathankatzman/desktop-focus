@@ -15,21 +15,15 @@ private let durations: [(label: String, seconds: TimeInterval)] = [
 struct MenuBarView: View {
     @ObservedObject var lockManager: LockManager
     @State private var selectedDuration: TimeInterval = 25 * 60
-    @State private var unlockAttempt = ""
-    @State private var showWrongCode = false
 
     var body: some View {
         Group {
             if lockManager.isLocked {
-                LockedView(
-                    lockManager: lockManager,
-                    unlockAttempt: $unlockAttempt,
-                    showWrongCode: $showWrongCode,
-                    onAttempt: attemptUnlock
-                )
+                LockedView(lockManager: lockManager)
             } else {
                 UnlockedView(
                     selectedDuration: $selectedDuration,
+                    startError: lockManager.startError,
                     onLock: { lockManager.lock(duration: selectedDuration) }
                 )
             }
@@ -37,25 +31,13 @@ struct MenuBarView: View {
         .frame(width: 300)
         .padding(16)
     }
-
-    private func attemptUnlock() {
-        let success = lockManager.attemptUnlock(code: unlockAttempt)
-        if success {
-            unlockAttempt = ""
-            showWrongCode = false
-        } else {
-            showWrongCode = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                unlockAttempt = ""
-            }
-        }
-    }
 }
 
 // MARK: - Unlocked
 
 struct UnlockedView: View {
     @Binding var selectedDuration: TimeInterval
+    let startError: LockStartError?
     let onLock: () -> Void
 
     var body: some View {
@@ -65,7 +47,7 @@ struct UnlockedView: View {
                 Text("Desktop Focus").font(.headline)
             }
 
-            Text("Lock yourself to the current desktop. Space-switch shortcuts and gestures will be blocked.")
+            Text("Stay on the current desktop. Common Space-switch shortcuts are blocked, with a fallback if macOS switches Spaces.")
                 .font(.caption).foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -90,6 +72,20 @@ struct UnlockedView: View {
             .buttonStyle(.borderedProminent)
             .tint(focusTeal)
             .padding(.top, 4)
+
+            if let startError {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(startError.message)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if startError == .accessibilityRequired {
+                        Link(
+                            "Open Accessibility Settings",
+                            destination: URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
+                        )
+                    }
+                }
+                .font(.caption)
+            }
 
             Divider()
 
@@ -117,9 +113,8 @@ struct DurationButtonStyle: ButtonStyle {
 
 struct LockedView: View {
     @ObservedObject var lockManager: LockManager
-    @Binding var unlockAttempt: String
-    @Binding var showWrongCode: Bool
-    let onAttempt: () -> Void
+    @State private var unlockAttempt = ""
+    @State private var showWrongCode = false
 
     var body: some View {
         VStack(spacing: 14) {
@@ -130,18 +125,21 @@ struct LockedView: View {
 
             Divider()
 
-            // Timer — informational only, does not gate the code
             VStack(spacing: 4) {
                 Text(formatTime(lockManager.timeRemaining))
                     .font(.system(size: 36, weight: .bold, design: .monospaced))
-                    .foregroundColor(lockManager.timeRemaining > 0 ? .primary : .green)
-                Text(lockManager.timeRemaining > 0 ? "remaining" : "time's up")
+                Text("remaining")
                     .font(.caption).foregroundColor(.secondary)
+            }
+
+            if lockManager.spaceRecoveryFailed {
+                Label("Couldn’t return to the locked Space. Switch back manually to continue there.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Divider()
 
-            // Unlock code — always visible, always enterable
             VStack(spacing: 10) {
                 Text("Escape Hatch Code")
                     .font(.caption.weight(.semibold)).foregroundColor(.secondary)
@@ -156,22 +154,23 @@ struct LockedView: View {
                 if lockManager.penaltyCooldown > 0 {
                     VStack(spacing: 4) {
                         Image(systemName: "exclamationmark.triangle.fill").foregroundColor(focusAmber)
-                        Text("3 wrong attempts — wait \(Int(lockManager.penaltyCooldown))s")
+                        Text("3 wrong attempts — wait \(Int(lockManager.penaltyCooldown.rounded(.up)))s")
                             .font(.caption).foregroundColor(focusAmber)
                     }
                 } else {
                     VStack(spacing: 6) {
-                        TextField("Type code to unlock", text: $unlockAttempt)
+                        TextField("Type code to unlock", text: Binding(
+                            get: { unlockAttempt },
+                            set: { unlockAttempt = FocusSession.normalizedCode($0) }
+                        ))
                             .textFieldStyle(.roundedBorder)
                             .multilineTextAlignment(.center)
                             .font(.system(size: 22, weight: .bold, design: .monospaced))
                             .onChange(of: unlockAttempt) { newValue in
-                                let digits = newValue.filter { $0.isNumber }
-                                if digits != newValue { unlockAttempt = digits }
-                                if unlockAttempt.count > 4 { unlockAttempt = String(unlockAttempt.prefix(4)) }
-                                if unlockAttempt.count == 4 { onAttempt() }
+                                guard newValue.count == FocusSession.codeLength else { return }
+                                showWrongCode = lockManager.attemptUnlock(code: newValue) == .incorrect
+                                unlockAttempt = ""
                             }
-                            .onSubmit { onAttempt() }
 
                         if showWrongCode {
                             Text("Wrong code — try again.")
@@ -187,9 +186,10 @@ struct LockedView: View {
     }
 
     private func formatTime(_ interval: TimeInterval) -> String {
-        let h = Int(interval) / 3600
-        let m = (Int(interval) % 3600) / 60
-        let s = Int(interval) % 60
+        let seconds = Int(interval.rounded(.up))
+        let h = seconds / 3600
+        let m = (seconds % 3600) / 60
+        let s = seconds % 60
         return h > 0
             ? String(format: "%d:%02d:%02d", h, m, s)
             : String(format: "%d:%02d", m, s)

@@ -30,6 +30,19 @@ final class FocusInputFilterTests: XCTestCase {
         )
     }
 
+    func testAllowsControlShortcutsWithAdditionalModifiers() {
+        let additionalModifiers: [CGEventFlags] = [.maskAlternate, .maskCommand, .maskShift]
+        for modifier in additionalModifiers {
+            let flags = modifier.union(.maskControl)
+            XCTAssertFalse(blocksKey(124, flags: flags))
+            XCTAssertFalse(blocksKey(18, flags: flags))
+        }
+    }
+
+    func testBlocksControlArrowWithKeyClassificationFlags() {
+        XCTAssertTrue(blocksKey(124, flags: [.maskControl, .maskAlphaShift, .maskNumericPad, .maskSecondaryFn]))
+    }
+
     func testBlocksMissionControlHardwareKey() {
         XCTAssertTrue(blocksKey(160, flags: []))
     }
@@ -53,65 +66,49 @@ final class FocusInputFilterTests: XCTestCase {
         )
     }
 
-    func testBlocksDeliberateHorizontalGestureScroll() {
-        XCTAssertTrue(
-            blocksSwipe(
-                horizontal: 8,
-                vertical: 1,
-                fixedHorizontal: 8.0,
-                fixedVertical: 1.0,
-                scrollPhase: 1
-            )
-        )
-        XCTAssertTrue(
-            blocksSwipe(
-                horizontal: 0,
-                vertical: 0,
-                fixedHorizontal: -7.0,
-                fixedVertical: 2.0,
-                momentumPhase: 1
-            )
-        )
+    func testEventTapLeavesScrollWheelEventsAlone() {
+        let scrollWheelMask = CGEventMask(1) << CGEventType.scrollWheel.rawValue
+        XCTAssertEqual(FocusInputFilter.requiredKeyboardMask & scrollWheelMask, 0)
+        XCTAssertEqual(FocusInputFilter.optionalInputMask & scrollWheelMask, 0)
     }
 
-    func testAllowsNormalScrollsAndSmallHorizontalMovement() {
-        XCTAssertFalse(
-            blocksSwipe(
-                horizontal: 8,
-                vertical: 1,
-                fixedHorizontal: 8.0,
-                fixedVertical: 1.0
-            )
-        )
-        XCTAssertFalse(
-            blocksSwipe(
-                horizontal: 4,
-                vertical: 1,
-                fixedHorizontal: 4.0,
-                fixedVertical: 1.0,
-                scrollPhase: 1
-            )
-        )
-        XCTAssertFalse(
-            blocksSwipe(
-                horizontal: 2,
-                vertical: 10,
-                fixedHorizontal: 2.0,
-                fixedVertical: 10.0,
-                scrollPhase: 1
-            )
-        )
-        XCTAssertFalse(
-            FocusInputFilter.shouldBlockSpaceSwipe(
-                type: .keyDown,
-                horizontal: 8,
-                vertical: 1,
-                fixedHorizontal: 8.0,
-                fixedVertical: 1.0,
-                scrollPhase: 1,
-                momentumPhase: 0
-            )
-        )
+    func testTapInstallationFailsWhenOnlyOptionalEventsAreAvailable() {
+        let keyDownMask = CGEventMask(1) << CGEventType.keyDown.rawValue
+        var requestedMasks: [CGEventMask] = []
+
+        let started = LockManager.installInputTaps { mask in
+            requestedMasks.append(mask)
+            return mask & ~keyDownMask != 0
+        }
+
+        XCTAssertFalse(started)
+        XCTAssertEqual(requestedMasks, [keyDownMask])
+    }
+
+    func testTapInstallationAllowsKeyboardOnly() {
+        let keyDownMask = CGEventMask(1) << CGEventType.keyDown.rawValue
+        var requestedMasks: [CGEventMask] = []
+
+        let started = LockManager.installInputTaps { mask in
+            requestedMasks.append(mask)
+            return mask == keyDownMask
+        }
+
+        XCTAssertTrue(started)
+        XCTAssertEqual(requestedMasks, [keyDownMask, FocusInputFilter.optionalInputMask])
+        XCTAssertEqual(FocusInputFilter.optionalInputMask & keyDownMask, 0)
+    }
+
+    func testPassingThroughOriginalEventDoesNotRetainIt() throws {
+        let manager = LockManager()
+        let event = try XCTUnwrap(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true))
+        let retainCount = CFGetRetainCount(event)
+
+        let passedThrough = manager.filterEvent(type: .keyDown, event: event)
+        let retainCountAfterCallback = CFGetRetainCount(event)
+
+        XCTAssertEqual(retainCountAfterCallback, retainCount)
+        XCTAssertTrue(passedThrough?.takeUnretainedValue() === event)
     }
 
     func testBlocksHorizontalTrackpadSwipeGesture() {
@@ -150,25 +147,6 @@ final class FocusInputFilterTests: XCTestCase {
 
     private func data1(specialKeyCode: Int, keyState: Int) -> Int {
         (specialKeyCode << 16) | (keyState << 8)
-    }
-
-    private func blocksSwipe(
-        horizontal: Int64,
-        vertical: Int64,
-        fixedHorizontal: Double,
-        fixedVertical: Double,
-        scrollPhase: Int64 = 0,
-        momentumPhase: Int64 = 0
-    ) -> Bool {
-        FocusInputFilter.shouldBlockSpaceSwipe(
-            type: .scrollWheel,
-            horizontal: horizontal,
-            vertical: vertical,
-            fixedHorizontal: fixedHorizontal,
-            fixedVertical: fixedVertical,
-            scrollPhase: scrollPhase,
-            momentumPhase: momentumPhase
-        )
     }
 
     private func blocksTrackpadSwipe(deltaX: CGFloat, deltaY: CGFloat) -> Bool {
