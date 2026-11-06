@@ -15,10 +15,12 @@ final class SpaceRecovery {
 
     func recoverIfNeeded(
         isOnTargetSpace: @escaping () -> Bool,
-        returnToTargetSpace: @escaping () -> Void
+        returnToTargetSpace: @escaping () -> Void,
+        didFinish: @escaping (Bool) -> Void
     ) {
         if isOnTargetSpace() {
             cancel()
+            didFinish(true)
             return
         }
         guard timer == nil else { return }
@@ -26,18 +28,16 @@ final class SpaceRecovery {
         attemptsRemaining = 4
         let timer = Timer(timeInterval: retryInterval, repeats: true) { [weak self] timer in
             guard let self, self.timer === timer else { return }
-            guard !isOnTargetSpace() else {
+            let onTarget = isOnTargetSpace()
+            // Give the last activation a retry interval to complete before reporting failure.
+            if onTarget || self.attemptsRemaining == 0 {
                 self.cancel()
+                didFinish(onTarget)
                 return
             }
 
             self.attemptsRemaining -= 1
             returnToTargetSpace()
-
-            // Activating a window can trigger another Space notification.
-            if self.timer === timer, self.attemptsRemaining == 0 {
-                self.cancel()
-            }
         }
         self.timer = timer
         RunLoop.main.add(timer, forMode: .common)

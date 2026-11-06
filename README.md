@@ -45,7 +45,7 @@ swift test
 
 ## Notes
 
-macOS does not provide a public API to fully forbid every possible Space change. Desktop Focus blocks the common public event paths before the switch happens and keeps a snap-back fallback for anything macOS still allows through.
+macOS does not provide a public API to fully forbid every possible Space change. Desktop Focus tries to return to the locked Space after a switch. If macOS keeps you on another Space, the menu bar panel asks you to switch back manually while the countdown continues.
 
 ## License
 

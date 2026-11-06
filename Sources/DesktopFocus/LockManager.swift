@@ -21,9 +21,8 @@ private func eventMask(_ type: CGEventType) -> CGEventMask {
 }
 
 struct FocusInputFilter {
-    static let tapMask = eventMask(.keyDown)
-        | eventMask(systemDefinedEventType)
-        | eventMask(swipeGestureEventType)
+    static let requiredKeyboardMask = eventMask(.keyDown)
+    static let optionalInputMask = eventMask(systemDefinedEventType) | eventMask(swipeGestureEventType)
 
     static let auxControlButtonSubtype = 8
     static let topRowDigitKeyCodes: Set<Int> = [18, 19, 20, 21, 23, 22, 26, 28, 25, 29]
@@ -102,6 +101,7 @@ class LockManager: ObservableObject {
     @Published private(set) var timeRemaining: TimeInterval = 0
     @Published private(set) var penaltyCooldown: TimeInterval = 0
     @Published private(set) var startError: LockStartError?
+    @Published private(set) var spaceRecoveryFailed = false
 
     var unlockCode: String { session?.unlockCode ?? "" }
 
@@ -109,8 +109,7 @@ class LockManager: ObservableObject {
     private var anchorWindow: NSWindow?
     private var spaceObserver: Any?
     private let spaceRecovery = SpaceRecovery()
-    private var eventTap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
+    private var eventTaps: [(port: CFMachPort, source: CFRunLoopSource)] = []
     private var localSwipeMonitor: Any?
     private var timer: Timer?
 
@@ -124,7 +123,7 @@ class LockManager: ObservableObject {
             startError = .desktopUnavailable
             return
         }
-        guard setupEventTap() else {
+        guard Self.installInputTaps(using: installEventTap) else {
             startError = .inputUnavailable
             return
         }
@@ -133,7 +132,7 @@ class LockManager: ObservableObject {
         setupSpaceObserver()
         setupLocalSwipeMonitor()
         let code = String(format: "%04d", Int.random(in: 0...9999))
-        session = FocusSession(duration: duration, startedAt: Date(), unlockCode: code)
+        session = FocusSession(duration: duration, startedAt: .now, unlockCode: code)
         timeRemaining = duration
         startError = nil
         isLocked = true
@@ -141,7 +140,7 @@ class LockManager: ObservableObject {
     }
 
     func attemptUnlock(code: String) -> UnlockResult {
-        let now = Date()
+        let now = ContinuousClock.now
         tick(at: now)
         guard let result = session?.attemptUnlock(code: code, at: now) else { return .ignored }
         if result == .unlocked {
@@ -160,7 +159,9 @@ class LockManager: ObservableObject {
     func filterEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         // Re-enable tap if system disabled it (e.g. after timeout)
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
+            for tap in eventTaps where !CGEvent.tapIsEnabled(tap: tap.port) {
+                CGEvent.tapEnable(tap: tap.port, enable: true)
+            }
             return Unmanaged.passUnretained(event)
         }
 
@@ -214,6 +215,7 @@ class LockManager: ObservableObject {
         session = nil
         timeRemaining = 0
         penaltyCooldown = 0
+        spaceRecoveryFailed = false
         timer?.invalidate()
         timer = nil
         spaceRecovery.cancel()
@@ -224,15 +226,12 @@ class LockManager: ObservableObject {
         }
 
         // Tear down event tap: remove from run loop first, then invalidate
-        if let src = runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), src, .commonModes)
-            runLoopSource = nil
+        for tap in eventTaps {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), tap.source, .commonModes)
+            CGEvent.tapEnable(tap: tap.port, enable: false)
+            CFMachPortInvalidate(tap.port)
         }
-        if let tap = eventTap {
-            CGEvent.tapEnable(tap: tap, enable: false)
-            CFMachPortInvalidate(tap)
-            eventTap = nil
-        }
+        eventTaps.removeAll()
 
         if let monitor = localSwipeMonitor {
             NSEvent.removeMonitor(monitor)
@@ -250,7 +249,7 @@ class LockManager: ObservableObject {
         let w: CGFloat = 140, h: CGFloat = 36
         let origin = NSPoint(x: r.maxX - w - 16, y: r.maxY - h - 8)
 
-        let window = NSWindow(
+        let window = FocusAnchorWindow(
             contentRect: NSRect(origin: origin, size: NSSize(width: w, height: h)),
             styleMask: [.borderless],
             backing: .buffered,
@@ -264,7 +263,7 @@ class LockManager: ObservableObject {
         window.animationBehavior = .none
         // Let ARC own the window — close() would double-release otherwise
         window.isReleasedWhenClosed = false
-        // .managed keeps it on one space; activating it will switch back to that space
+        // Keep the recovery window associated with the original Space.
         window.collectionBehavior = [.managed]
         // Don't steal mouse events from the user's work
         window.ignoresMouseEvents = true
@@ -292,7 +291,18 @@ class LockManager: ObservableObject {
             returnToTargetSpace: { [weak window] in
                 guard let window else { return }
                 window.makeKeyAndOrderFront(nil)
-                NSApp.activate(ignoringOtherApps: true)
+                if #available(macOS 14, *) {
+                    NSApp.activate()
+                } else {
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+            },
+            didFinish: { [weak self] returnedToTarget in
+                guard let self, self.isLocked else { return }
+                let failed = !returnedToTarget
+                if self.spaceRecoveryFailed != failed {
+                    self.spaceRecoveryFailed = failed
+                }
             }
         )
     }
@@ -311,7 +321,15 @@ class LockManager: ObservableObject {
         }
     }
 
-    private func setupEventTap() -> Bool {
+    static func installInputTaps(using install: (CGEventMask) -> Bool) -> Bool {
+        // Core Graphics drops unavailable event types and returns nil if none remain.
+        // Keep key-down in its own tap so optional inputs cannot hide a keyboard failure.
+        guard install(FocusInputFilter.requiredKeyboardMask) else { return false }
+        _ = install(FocusInputFilter.optionalInputMask)
+        return true
+    }
+
+    private func installEventTap(mask: CGEventMask) -> Bool {
         // passUnretained is safe — LockManager lives for the entire app lifetime
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
 
@@ -319,7 +337,7 @@ class LockManager: ObservableObject {
             tap: .cghidEventTap,
             place: .headInsertEventTap,
             options: .defaultTap,       // .defaultTap = active tap, can block events
-            eventsOfInterest: FocusInputFilter.tapMask,
+            eventsOfInterest: mask,
             callback: tapCallback,
             userInfo: selfPtr
         ) else {
@@ -332,21 +350,20 @@ class LockManager: ObservableObject {
             CFMachPortInvalidate(tap)
             return false
         }
-        eventTap = tap
-        runLoopSource = source
+        eventTaps.append((port: tap, source: source))
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         return true
     }
 
     private func startTimer() {
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
-            self?.tick(at: Date())
+            self?.tick(at: .now)
         }
         self.timer = timer
         RunLoop.main.add(timer, forMode: .common)
     }
 
-    private func tick(at now: Date) {
+    private func tick(at now: ContinuousClock.Instant) {
         guard let session else { return }
         let remaining = session.remaining(at: now)
         guard remaining > 0 else {
@@ -359,6 +376,11 @@ class LockManager: ObservableObject {
 }
 
 // MARK: - Badge view
+
+private final class FocusAnchorWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
 
 // Custom-drawn, no layer-backed subviews — avoids _NSWindowTransformAnimation crash
 private final class LockedBadgeView: NSView {

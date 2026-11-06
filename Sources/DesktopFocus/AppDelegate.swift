@@ -24,10 +24,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         updateStatusIcon(isLocked: false)
 
-        lockManager.$isLocked.combineLatest(lockManager.$startError)
+        lockManager.$isLocked.combineLatest(lockManager.$startError, lockManager.$spaceRecoveryFailed)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] isLocked, _ in
+            .sink { [weak self] isLocked, _, recoveryFailed in
                 self?.updateStatusIcon(isLocked: isLocked)
+                self?.statusItem?.button?.toolTip = recoveryFailed ? "Couldn’t return to the locked Space" : nil
                 self?.repositionPanelIfNeeded()
             }
             .store(in: &cancellables)
@@ -124,7 +125,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let width: CGFloat = 332
         let height: CGFloat
         if lockManager.isLocked {
-            height = 420
+            height = lockManager.spaceRecoveryFailed ? 484 : 420
         } else {
             height = lockManager.startError == nil ? 296 : 380
         }

@@ -68,7 +68,35 @@ final class FocusInputFilterTests: XCTestCase {
 
     func testEventTapLeavesScrollWheelEventsAlone() {
         let scrollWheelMask = CGEventMask(1) << CGEventType.scrollWheel.rawValue
-        XCTAssertEqual(FocusInputFilter.tapMask & scrollWheelMask, 0)
+        XCTAssertEqual(FocusInputFilter.requiredKeyboardMask & scrollWheelMask, 0)
+        XCTAssertEqual(FocusInputFilter.optionalInputMask & scrollWheelMask, 0)
+    }
+
+    func testTapInstallationFailsWhenOnlyOptionalEventsAreAvailable() {
+        let keyDownMask = CGEventMask(1) << CGEventType.keyDown.rawValue
+        var requestedMasks: [CGEventMask] = []
+
+        let started = LockManager.installInputTaps { mask in
+            requestedMasks.append(mask)
+            return mask & ~keyDownMask != 0
+        }
+
+        XCTAssertFalse(started)
+        XCTAssertEqual(requestedMasks, [keyDownMask])
+    }
+
+    func testTapInstallationAllowsKeyboardOnly() {
+        let keyDownMask = CGEventMask(1) << CGEventType.keyDown.rawValue
+        var requestedMasks: [CGEventMask] = []
+
+        let started = LockManager.installInputTaps { mask in
+            requestedMasks.append(mask)
+            return mask == keyDownMask
+        }
+
+        XCTAssertTrue(started)
+        XCTAssertEqual(requestedMasks, [keyDownMask, FocusInputFilter.optionalInputMask])
+        XCTAssertEqual(FocusInputFilter.optionalInputMask & keyDownMask, 0)
     }
 
     func testPassingThroughOriginalEventDoesNotRetainIt() throws {

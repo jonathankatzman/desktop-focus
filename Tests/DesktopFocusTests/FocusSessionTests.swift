@@ -3,7 +3,7 @@ import XCTest
 @testable import DesktopFocus
 
 final class FocusSessionTests: XCTestCase {
-    private let start = Date(timeIntervalSince1970: 100)
+    private let start = ContinuousClock.now
 
     func testCountdownEndsAtDeadlineEvenDuringCooldown() {
         var session = FocusSession(duration: 10, startedAt: start, unlockCode: "0123")
@@ -12,10 +12,10 @@ final class FocusSessionTests: XCTestCase {
             XCTAssertEqual(session.attemptUnlock(code: "9999", at: start), .incorrect)
         }
 
-        XCTAssertEqual(session.remaining(at: start.addingTimeInterval(9)), 1)
-        let deadline = start.addingTimeInterval(10)
+        XCTAssertEqual(session.remaining(at: start.advanced(by: .seconds(9))), 1)
+        let deadline = start.advanced(by: .seconds(10))
         XCTAssertEqual(session.remaining(at: deadline), 0)
-        XCTAssertEqual(session.remaining(at: deadline.addingTimeInterval(1)), 0)
+        XCTAssertEqual(session.remaining(at: deadline.advanced(by: .seconds(1))), 0)
         XCTAssertGreaterThan(session.cooldownRemaining(at: deadline), 0)
         XCTAssertEqual(session.attemptUnlock(code: "0123", at: deadline), .ignored)
     }
@@ -37,8 +37,10 @@ final class FocusSessionTests: XCTestCase {
             XCTAssertEqual(session.attemptUnlock(code: "9999", at: start), .incorrect)
         }
 
-        XCTAssertEqual(session.attemptUnlock(code: "0123", at: start.addingTimeInterval(59)), .ignored)
-        XCTAssertEqual(session.attemptUnlock(code: "0123", at: start.addingTimeInterval(60)), .unlocked)
+        let beforeCooldownEnds = start.advanced(by: .milliseconds(59_750))
+        XCTAssertEqual(session.cooldownRemaining(at: beforeCooldownEnds), 0.25)
+        XCTAssertEqual(session.attemptUnlock(code: "0123", at: beforeCooldownEnds), .ignored)
+        XCTAssertEqual(session.attemptUnlock(code: "0123", at: start.advanced(by: .seconds(60))), .unlocked)
     }
 
     func testNormalizationPreservesLeadingZeroAndKeepsOnlyFourASCIIDigits() {

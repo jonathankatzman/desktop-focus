@@ -132,6 +132,12 @@ struct LockedView: View {
                     .font(.caption).foregroundColor(.secondary)
             }
 
+            if lockManager.spaceRecoveryFailed {
+                Label("Couldn’t return to the locked Space. Switch back manually to continue there.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Divider()
 
             VStack(spacing: 10) {
