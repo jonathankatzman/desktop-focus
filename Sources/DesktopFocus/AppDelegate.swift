@@ -24,15 +24,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         updateStatusIcon(isLocked: false)
 
-        lockManager.$isLocked
+        lockManager.$isLocked.combineLatest(lockManager.$startError)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] isLocked in
+            .sink { [weak self] isLocked, _ in
                 self?.updateStatusIcon(isLocked: isLocked)
                 self?.repositionPanelIfNeeded()
             }
             .store(in: &cancellables)
-
-        checkAccessibilityPermission()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -124,7 +122,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let buttonRectInWindow = button.convert(button.bounds, to: nil)
         let buttonRectOnScreen = buttonWindow.convertToScreen(buttonRectInWindow)
         let width: CGFloat = 332
-        let height: CGFloat = lockManager.isLocked ? 420 : 296
+        let height: CGFloat
+        if lockManager.isLocked {
+            height = 420
+        } else {
+            height = lockManager.startError == nil ? 296 : 380
+        }
         let margin: CGFloat = 8
         let gap: CGFloat = 6
 
@@ -135,24 +138,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let y = max(screen.visibleFrame.minY + margin, topY - height)
 
         panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
-    }
-
-    private func checkAccessibilityPermission() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
-        let trusted = AXIsProcessTrustedWithOptions(options as CFDictionary)
-        if !trusted {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                let alert = NSAlert()
-                alert.messageText = "Accessibility Permission Required"
-                alert.informativeText = "Desktop Focus needs Accessibility access to intercept shortcuts and gestures that switch desktops. Please grant access in System Settings > Privacy & Security > Accessibility, then relaunch the app."
-                alert.alertStyle = .informational
-                alert.addButton(withTitle: "Open System Settings")
-                alert.addButton(withTitle: "Later")
-                if alert.runModal() == .alertFirstButtonReturn {
-                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
-                }
-            }
-        }
     }
 }
 

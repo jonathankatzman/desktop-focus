@@ -94,16 +94,32 @@ struct FocusInputFilter {
     }
 }
 
+enum LockStartError: Equatable {
+    case accessibilityRequired
+    case inputUnavailable
+    case desktopUnavailable
+
+    var message: String {
+        switch self {
+        case .accessibilityRequired:
+            return "Allow Desktop Focus in Accessibility settings, then try again."
+        case .inputUnavailable:
+            return "macOS couldn’t start input interception. Reopen Desktop Focus and try again."
+        case .desktopUnavailable:
+            return "Desktop Focus couldn’t find an active display. Try again when a display is available."
+        }
+    }
+}
+
 class LockManager: ObservableObject {
-    @Published var isLocked = false
-    @Published var timeRemaining: TimeInterval = 0
-    @Published var unlockCode: String = ""
-    @Published var penaltyCooldown: TimeInterval = 0
+    @Published private(set) var isLocked = false
+    @Published private(set) var timeRemaining: TimeInterval = 0
+    @Published private(set) var penaltyCooldown: TimeInterval = 0
+    @Published private(set) var startError: LockStartError?
 
-    var cancellables = Set<AnyCancellable>()
+    var unlockCode: String { session?.unlockCode ?? "" }
 
-    private var lockEndDate: Date?
-    private var penaltyEndDate: Date?
+    private var session: FocusSession?
     private var anchorWindow: NSWindow?
     private var spaceObserver: Any?
     private var eventTap: CFMachPort?
@@ -111,37 +127,43 @@ class LockManager: ObservableObject {
     private var localSwipeMonitor: Any?
     private var globalSwipeMonitor: Any?
     private var timer: Timer?
-    private var wrongAttempts = 0
 
     func lock(duration: TimeInterval) {
-        unlockCode = String(format: "%04d", Int.random(in: 0...9999))
-        lockEndDate = Date().addingTimeInterval(duration)
-        timeRemaining = duration
-        wrongAttempts = 0
-        penaltyCooldown = 0
-        isLocked = true
+        guard !isLocked, duration.isFinite, duration > 0 else { return }
+        guard AXIsProcessTrusted() else {
+            startError = .accessibilityRequired
+            return
+        }
+        guard let screen = NSScreen.main else {
+            startError = .desktopUnavailable
+            return
+        }
+        guard setupEventTap() else {
+            startError = .inputUnavailable
+            return
+        }
 
-        setupAnchorWindow()
+        setupAnchorWindow(on: screen)
         setupSpaceObserver()
-        setupEventTap()
         setupSwipeMonitors()
+        let code = String(format: "%04d", Int.random(in: 0...9999))
+        session = FocusSession(duration: duration, startedAt: Date(), unlockCode: code)
+        timeRemaining = duration
+        startError = nil
+        isLocked = true
         startTimer()
     }
 
-    // Code is always valid regardless of time remaining — it's an escape hatch
-    func attemptUnlock(code: String) -> Bool {
-        guard penaltyCooldown <= 0 else { return false }
-        guard code == unlockCode else {
-            wrongAttempts += 1
-            if wrongAttempts >= 3 {
-                penaltyEndDate = Date().addingTimeInterval(60)
-                penaltyCooldown = 60
-                wrongAttempts = 0
-            }
-            return false
+    func attemptUnlock(code: String) -> UnlockResult {
+        let now = Date()
+        tick(at: now)
+        guard let result = session?.attemptUnlock(code: code, at: now) else { return .ignored }
+        if result == .unlocked {
+            tearDown()
+        } else if let session {
+            penaltyCooldown = session.cooldownRemaining(at: now)
         }
-        tearDown()
-        return true
+        return result
     }
 
     func forceUnlock() {
@@ -215,6 +237,9 @@ class LockManager: ObservableObject {
 
     private func tearDown() {
         isLocked = false
+        session = nil
+        timeRemaining = 0
+        penaltyCooldown = 0
         timer?.invalidate()
         timer = nil
 
@@ -249,8 +274,7 @@ class LockManager: ObservableObject {
     }
 
     // Visible "LOCKED" badge in the corner — this is what we snap back to
-    private func setupAnchorWindow() {
-        guard let screen = NSScreen.main else { return }
+    private func setupAnchorWindow(on screen: NSScreen) {
         let r = screen.visibleFrame
         let w: CGFloat = 140, h: CGFloat = 36
         let origin = NSPoint(x: r.maxX - w - 16, y: r.maxY - h - 8)
@@ -330,7 +354,7 @@ class LockManager: ObservableObject {
         }
     }
 
-    private func setupEventTap() {
+    private func setupEventTap() -> Bool {
         let mask = eventMask(.keyDown)
             | eventMask(systemDefinedEventType)
             | eventMask(.scrollWheel)
@@ -346,32 +370,38 @@ class LockManager: ObservableObject {
             callback: tapCallback,
             userInfo: selfPtr
         ) else {
-            print("[DesktopFocus] CGEventTap failed — grant Accessibility permission and relaunch")
-            return
+            return false
         }
 
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+        guard CGEvent.tapIsEnabled(tap: tap),
+              let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
+            CFMachPortInvalidate(tap)
+            return false
+        }
         eventTap = tap
         runLoopSource = source
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        return true
     }
 
     private func startTimer() {
-        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            self?.tick()
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.tick(at: Date())
         }
+        self.timer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
 
-    private func tick() {
-        guard let end = lockEndDate else { return }
-        timeRemaining = max(0, end.timeIntervalSinceNow)
-
-        if let penaltyEnd = penaltyEndDate {
-            let p = max(0, penaltyEnd.timeIntervalSinceNow)
-            penaltyCooldown = p
-            if p <= 0 { penaltyEndDate = nil }
+    private func tick(at now: Date) {
+        guard let session else { return }
+        let remaining = session.remaining(at: now)
+        guard remaining > 0 else {
+            tearDown()
+            return
         }
+        timeRemaining = remaining
+        penaltyCooldown = session.cooldownRemaining(at: now)
     }
 }
 

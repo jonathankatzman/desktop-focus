@@ -4,7 +4,7 @@ Desktop Focus is a small macOS menu bar utility for locking yourself to the curr
 
 When a focus lock is active, the app blocks common Space-switching shortcuts and gestures, including Control-arrow navigation, direct Control-number desktop shortcuts, Mission Control keys, and horizontal trackpad swipes. It also keeps a visible focus badge on the locked Space and snaps back if macOS allows an unexpected Space transition.
 
-An escape hatch code is shown during each session. Typing the four-digit code in the menu bar panel unlocks focus early.
+The lock ends automatically when the chosen time is up. Typing the four-digit escape code in the menu bar panel unlocks focus early.
 
 ## Requirements
 
@@ -29,13 +29,13 @@ cp -R DesktopFocus.app /Applications/
 open /Applications/DesktopFocus.app
 ```
 
-On first launch, grant Accessibility access in:
+If the app asks for Accessibility access when you start a lock, open:
 
 ```text
 System Settings > Privacy & Security > Accessibility
 ```
 
-Then quit and reopen Desktop Focus.
+Enable Desktop Focus, adding the app to the list if needed, then try starting the lock again.
 
 ## Test
 
