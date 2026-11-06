@@ -2,7 +2,7 @@
 
 Desktop Focus is a small macOS menu bar utility for locking yourself to the current Desktop/Space for a chosen amount of time.
 
-When a focus lock is active, the app blocks common Space-switching shortcuts and gestures, including Control-arrow navigation, direct Control-number desktop shortcuts, Mission Control keys, and horizontal trackpad swipes. It also keeps a visible focus badge on the locked Space and snaps back if macOS allows an unexpected Space transition.
+When a focus lock is active, the app blocks common Space-switching shortcuts, including Control-arrow navigation, direct Control-number desktop shortcuts, and Mission Control keys. It intercepts horizontal swipe events when macOS delivers them to the app’s input filter and leaves normal scrolling available. A badge marks the locked Space, and the app tries to return there if macOS allows a switch.
 
 The lock ends automatically when the chosen time is up. Typing the four-digit escape code in the menu bar panel unlocks focus early.
 

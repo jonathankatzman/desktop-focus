@@ -8,7 +8,7 @@ private func tapCallback(
     event: CGEvent,
     refcon: UnsafeMutableRawPointer?
 ) -> Unmanaged<CGEvent>? {
-    guard let refcon else { return Unmanaged.passRetained(event) }
+    guard let refcon else { return Unmanaged.passUnretained(event) }
     let manager = Unmanaged<LockManager>.fromOpaque(refcon).takeUnretainedValue()
     return manager.filterEvent(type: type, event: event)
 }
@@ -21,8 +21,13 @@ private func eventMask(_ type: CGEventType) -> CGEventMask {
 }
 
 struct FocusInputFilter {
+    static let tapMask = eventMask(.keyDown)
+        | eventMask(systemDefinedEventType)
+        | eventMask(swipeGestureEventType)
+
     static let auxControlButtonSubtype = 8
     static let topRowDigitKeyCodes: Set<Int> = [18, 19, 20, 21, 23, 22, 26, 28, 25, 29]
+    private static let shortcutModifiers: CGEventFlags = [.maskControl, .maskCommand, .maskAlternate, .maskShift]
 
     static func shouldBlockKeyboardShortcut(
         type: CGEventType,
@@ -31,7 +36,7 @@ struct FocusInputFilter {
     ) -> Bool {
         guard type == .keyDown else { return false }
 
-        if flags.contains(.maskControl) {
+        if flags.intersection(shortcutModifiers) == .maskControl {
             switch keyCode {
             case 123, 124: return true  // Ctrl+Left / Ctrl+Right — switch spaces
             case 126:      return true  // Ctrl+Up — Mission Control
@@ -63,25 +68,6 @@ struct FocusInputFilter {
         // Blocking this small range avoids the brief Space animation for hardware keys
         // while leaving volume, brightness, playback, and eject keys alone.
         return isKeyDown && (32...34).contains(specialKeyCode)
-    }
-
-    static func shouldBlockSpaceSwipe(
-        type: CGEventType,
-        horizontal: Int64,
-        vertical: Int64,
-        fixedHorizontal: Double,
-        fixedVertical: Double,
-        scrollPhase: Int64,
-        momentumPhase: Int64
-    ) -> Bool {
-        guard type == .scrollWheel else { return false }
-
-        let isGestureLike = scrollPhase != 0 || momentumPhase != 0
-        let isMostlyHorizontal = abs(horizontal) > abs(vertical)
-            || abs(fixedHorizontal) > abs(fixedVertical)
-        let isDeliberateSwipe = abs(horizontal) >= 6 || abs(fixedHorizontal) >= 6.0
-
-        return isGestureLike && isMostlyHorizontal && isDeliberateSwipe
     }
 
     static func shouldBlockTrackpadSwipe(
@@ -175,21 +161,21 @@ class LockManager: ObservableObject {
         // Re-enable tap if system disabled it (e.g. after timeout)
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
-            return Unmanaged.passRetained(event)
+            return Unmanaged.passUnretained(event)
         }
 
-        guard isLocked else { return Unmanaged.passRetained(event) }
+        guard isLocked else { return Unmanaged.passUnretained(event) }
 
         if shouldBlockKeyboardShortcut(type: type, event: event) { return nil }
         if shouldBlockMissionControlButton(type: type, event: event) { return nil }
-        if shouldBlockSpaceSwipe(type: type, event: event) { return nil }
         if shouldBlockTrackpadSwipe(type: type, event: event) { return nil }
 
-        return Unmanaged.passRetained(event)
+        return Unmanaged.passUnretained(event)
     }
 
     private func shouldBlockKeyboardShortcut(type: CGEventType, event: CGEvent) -> Bool {
-        FocusInputFilter.shouldBlockKeyboardShortcut(
+        guard type == .keyDown else { return false }
+        return FocusInputFilter.shouldBlockKeyboardShortcut(
             type: type,
             keyCode: Int(event.getIntegerValueField(.keyboardEventKeycode)),
             flags: event.flags
@@ -207,18 +193,6 @@ class LockManager: ObservableObject {
             type: type,
             subtype: Int(nsEvent.subtype.rawValue),
             data1: nsEvent.data1
-        )
-    }
-
-    private func shouldBlockSpaceSwipe(type: CGEventType, event: CGEvent) -> Bool {
-        FocusInputFilter.shouldBlockSpaceSwipe(
-            type: type,
-            horizontal: event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2),
-            vertical: event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1),
-            fixedHorizontal: event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2),
-            fixedVertical: event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1),
-            scrollPhase: event.getIntegerValueField(.scrollWheelEventScrollPhase),
-            momentumPhase: event.getIntegerValueField(.scrollWheelEventMomentumPhase)
         )
     }
 
@@ -355,10 +329,6 @@ class LockManager: ObservableObject {
     }
 
     private func setupEventTap() -> Bool {
-        let mask = eventMask(.keyDown)
-            | eventMask(systemDefinedEventType)
-            | eventMask(.scrollWheel)
-            | eventMask(swipeGestureEventType)
         // passUnretained is safe — LockManager lives for the entire app lifetime
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
 
@@ -366,7 +336,7 @@ class LockManager: ObservableObject {
             tap: .cghidEventTap,
             place: .headInsertEventTap,
             options: .defaultTap,       // .defaultTap = active tap, can block events
-            eventsOfInterest: mask,
+            eventsOfInterest: FocusInputFilter.tapMask,
             callback: tapCallback,
             userInfo: selfPtr
         ) else {

@@ -47,7 +47,7 @@ struct UnlockedView: View {
                 Text("Desktop Focus").font(.headline)
             }
 
-            Text("Lock yourself to the current desktop. Space-switch shortcuts and gestures will be blocked.")
+            Text("Stay on the current desktop. Common Space-switch shortcuts are blocked, with a fallback if macOS switches Spaces.")
                 .font(.caption).foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
