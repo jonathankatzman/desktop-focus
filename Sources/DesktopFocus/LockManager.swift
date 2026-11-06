@@ -108,10 +108,10 @@ class LockManager: ObservableObject {
     private var session: FocusSession?
     private var anchorWindow: NSWindow?
     private var spaceObserver: Any?
+    private let spaceRecovery = SpaceRecovery()
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var localSwipeMonitor: Any?
-    private var globalSwipeMonitor: Any?
     private var timer: Timer?
 
     func lock(duration: TimeInterval) {
@@ -131,7 +131,7 @@ class LockManager: ObservableObject {
 
         setupAnchorWindow(on: screen)
         setupSpaceObserver()
-        setupSwipeMonitors()
+        setupLocalSwipeMonitor()
         let code = String(format: "%04d", Int.random(in: 0...9999))
         session = FocusSession(duration: duration, startedAt: Date(), unlockCode: code)
         timeRemaining = duration
@@ -216,6 +216,7 @@ class LockManager: ObservableObject {
         penaltyCooldown = 0
         timer?.invalidate()
         timer = nil
+        spaceRecovery.cancel()
 
         if let observer = spaceObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
@@ -236,10 +237,6 @@ class LockManager: ObservableObject {
         if let monitor = localSwipeMonitor {
             NSEvent.removeMonitor(monitor)
             localSwipeMonitor = nil
-        }
-        if let monitor = globalSwipeMonitor {
-            NSEvent.removeMonitor(monitor)
-            globalSwipeMonitor = nil
         }
 
         // Hide instead of close — isReleasedWhenClosed=false means ARC handles release
@@ -284,23 +281,23 @@ class LockManager: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.snapBack()
+            self?.recoverAnchorSpace()
         }
     }
 
-    private func snapBack() {
+    private func recoverAnchorSpace() {
         guard isLocked, let window = anchorWindow else { return }
-        // Retry across a short window to handle transition animations
-        for delay in [0.0, 0.1, 0.25, 0.5] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak window] in
-                guard self?.isLocked == true, let window else { return }
+        spaceRecovery.recoverIfNeeded(
+            isOnTargetSpace: { [weak window] in window?.isOnActiveSpace ?? true },
+            returnToTargetSpace: { [weak window] in
+                guard let window else { return }
                 window.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
             }
-        }
+        )
     }
 
-    private func setupSwipeMonitors() {
+    private func setupLocalSwipeMonitor() {
         localSwipeMonitor = NSEvent.addLocalMonitorForEvents(matching: .swipe) { [weak self] event in
             guard self?.isLocked == true,
                   FocusInputFilter.shouldBlockTrackpadSwipe(
@@ -311,20 +308,6 @@ class LockManager: ObservableObject {
                 return event
             }
             return nil
-        }
-
-        // Global monitors cannot cancel events, but this can pull focus back sooner on
-        // systems that expose Space swipes to AppKit before activeSpaceDidChange fires.
-        globalSwipeMonitor = NSEvent.addGlobalMonitorForEvents(matching: .swipe) { [weak self] event in
-            guard self?.isLocked == true,
-                  FocusInputFilter.shouldBlockTrackpadSwipe(
-                    eventType: event.type,
-                    deltaX: event.deltaX,
-                    deltaY: event.deltaY
-                  ) else {
-                return
-            }
-            self?.snapBack()
         }
     }
 
