@@ -22,6 +22,8 @@ Desktop Focus is intentionally not sandboxed because it uses a global event tap 
 
 The build script creates and ad-hoc signs `DesktopFocus.app` in the project directory.
 
+For repeated builds, set `CODE_SIGN_IDENTITY` to your Apple Development signing identity. This keeps the app’s signing identity stable so Accessibility approval can survive updates.
+
 ## Install
 
 ```sh
@@ -36,6 +38,8 @@ System Settings > Privacy & Security > Accessibility
 ```
 
 Enable Desktop Focus, adding the app to the list if needed, then try starting the lock again.
+
+If macOS is protecting password input, finish signing in before starting a session. Keyboard blocking is unavailable while Secure Event Input is active.
 
 ## Test
 

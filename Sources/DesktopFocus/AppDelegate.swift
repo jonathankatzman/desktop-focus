@@ -24,11 +24,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         updateStatusIcon(isLocked: false)
 
-        lockManager.$isLocked.combineLatest(lockManager.$startError, lockManager.$spaceRecoveryFailed)
+        lockManager.$isLocked.combineLatest(
+            lockManager.$startError, lockManager.$spaceRecoveryFailed, lockManager.$keyboardBlockingUnavailable
+        )
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] isLocked, _, recoveryFailed in
+            .sink { [weak self] isLocked, _, recoveryFailed, keyboardUnavailable in
                 self?.updateStatusIcon(isLocked: isLocked)
-                self?.statusItem?.button?.toolTip = recoveryFailed ? "Couldn’t return to the locked Space" : nil
+                if keyboardUnavailable {
+                    self?.statusItem?.button?.toolTip = "Keyboard blocking is unavailable during protected password input"
+                } else {
+                    self?.statusItem?.button?.toolTip = recoveryFailed ? "Couldn’t return to the locked Space" : nil
+                }
                 self?.repositionPanelIfNeeded()
             }
             .store(in: &cancellables)
@@ -125,7 +131,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let width: CGFloat = 332
         let height: CGFloat
         if lockManager.isLocked {
-            height = lockManager.spaceRecoveryFailed ? 484 : 420
+            height = 420
+                + (lockManager.spaceRecoveryFailed ? 64 : 0)
+                + (lockManager.keyboardBlockingUnavailable ? 64 : 0)
         } else {
             height = lockManager.startError == nil ? 296 : 380
         }

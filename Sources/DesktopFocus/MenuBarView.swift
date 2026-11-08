@@ -138,6 +138,12 @@ struct LockedView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            if lockManager.keyboardBlockingUnavailable {
+                Label("macOS is protecting password input. Keyboard blocking will resume when that ends.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Divider()
 
             VStack(spacing: 10) {
