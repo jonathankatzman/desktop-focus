@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Combine
+import Darwin
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
@@ -8,8 +9,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var panelEventMonitor: Any?
     private var lockManager = LockManager()
     private var cancellables = Set<AnyCancellable>()
+    private var terminationSignal: DispatchSourceSignal?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Restore temporary settings even when the process is stopped by an updater.
+        signal(SIGTERM, SIG_IGN)
+        let terminationSignal = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        terminationSignal.setEventHandler { [weak self] in
+            self?.lockManager.forceUnlock()
+            NSApp.terminate(nil)
+        }
+        self.terminationSignal = terminationSignal
+        terminationSignal.resume()
         if let iconURL = Bundle.main.url(forResource: "DesktopFocus", withExtension: "icns"),
            let icon = NSImage(contentsOf: iconURL) {
             NSApp.applicationIconImage = icon
@@ -70,6 +81,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return .terminateNow
         }
         return .terminateCancel
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        lockManager.forceUnlock()
     }
 
     private func updateStatusIcon(isLocked: Bool) {

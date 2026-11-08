@@ -24,6 +24,7 @@ struct MenuBarView: View {
                 UnlockedView(
                     selectedDuration: $selectedDuration,
                     startError: lockManager.startError,
+                    onRestoreGestures: { lockManager.restoreGestureSettings() },
                     onLock: { lockManager.lock(duration: selectedDuration) }
                 )
             }
@@ -38,6 +39,7 @@ struct MenuBarView: View {
 struct UnlockedView: View {
     @Binding var selectedDuration: TimeInterval
     let startError: LockStartError?
+    let onRestoreGestures: () -> Void
     let onLock: () -> Void
 
     var body: some View {
@@ -47,7 +49,7 @@ struct UnlockedView: View {
                 Text("Desktop Focus").font(.headline)
             }
 
-            Text("Stay on the current desktop. Common Space-switch shortcuts are blocked, with a fallback if macOS switches Spaces.")
+            Text("Block desktop-switch shortcuts and swipe gestures until the timer ends. Your swipe settings are restored when the session ends.")
                 .font(.caption).foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -82,6 +84,9 @@ struct UnlockedView: View {
                             "Open Accessibility Settings",
                             destination: URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
                         )
+                    }
+                    if startError == .gestureRestoreRequired {
+                        Button("Restore Swipe Settings", action: onRestoreGestures)
                     }
                 }
                 .font(.caption)
