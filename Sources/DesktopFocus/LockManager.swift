@@ -1,5 +1,7 @@
 import AppKit
+import Carbon
 import Combine
+import OSLog
 
 // Free function required for CGEventTap C callback
 private func tapCallback(
@@ -81,27 +83,41 @@ struct FocusInputFilter {
 
 enum LockStartError: Equatable {
     case accessibilityRequired
+    case secureInputActive
     case inputUnavailable
     case desktopUnavailable
+    case gestureSettingsUnavailable
+    case gestureRestoreRequired
+    case anotherFocusSessionActive
 
     var message: String {
         switch self {
         case .accessibilityRequired:
             return "Allow Desktop Focus in Accessibility settings, then try again."
+        case .secureInputActive:
+            return "macOS is protecting password input, so keyboard blocking is unavailable. Finish signing in, then try again."
         case .inputUnavailable:
             return "macOS couldn’t start input interception. Reopen Desktop Focus and try again."
         case .desktopUnavailable:
             return "Desktop Focus couldn’t find an active display. Try again when a display is available."
+        case .gestureSettingsUnavailable:
+            return "Desktop Focus couldn’t turn off desktop-switch gestures. Try again."
+        case .gestureRestoreRequired:
+            return "Your desktop-switch gesture settings still need to be restored."
+        case .anotherFocusSessionActive:
+            return "Another copy of Desktop Focus has an active session. Unlock that copy first."
         }
     }
 }
 
 class LockManager: ObservableObject {
+    private static let logger = Logger(subsystem: "com.personal.desktopfocus", category: "Lock")
     @Published private(set) var isLocked = false
     @Published private(set) var timeRemaining: TimeInterval = 0
     @Published private(set) var penaltyCooldown: TimeInterval = 0
     @Published private(set) var startError: LockStartError?
     @Published private(set) var spaceRecoveryFailed = false
+    @Published private(set) var keyboardBlockingUnavailable = false
 
     var unlockCode: String { session?.unlockCode ?? "" }
 
@@ -109,22 +125,49 @@ class LockManager: ObservableObject {
     private var anchorWindow: NSWindow?
     private var spaceObserver: Any?
     private let spaceRecovery = SpaceRecovery()
+    private let gestureSettings: SystemGestureSettings
     private var eventTaps: [(port: CFMachPort, source: CFRunLoopSource)] = []
     private var localSwipeMonitor: Any?
     private var timer: Timer?
+    private var receivedKeyboardInput = false
+
+    init(gestureSettings: SystemGestureSettings = SystemGestureSettings()) {
+        self.gestureSettings = gestureSettings
+        Self.logger.notice("Startup Accessibility: \(AXIsProcessTrusted()), Secure Event Input: \(IsSecureEventInputEnabled())")
+        restoreGestureSettings()
+    }
 
     func lock(duration: TimeInterval) {
         guard !isLocked, duration.isFinite, duration > 0 else { return }
         guard AXIsProcessTrusted() else {
+            Self.logger.notice("Lock startup denied by Accessibility")
             startError = .accessibilityRequired
+            return
+        }
+        guard !IsSecureEventInputEnabled() else {
+            Self.logger.notice("Lock startup blocked by Secure Event Input")
+            startError = .secureInputActive
             return
         }
         guard let screen = NSScreen.main else {
             startError = .desktopUnavailable
             return
         }
+        do {
+            try gestureSettings.suspendHorizontalSpaceSwipes()
+        } catch GestureSettingsError.anotherSessionActive {
+            startError = .anotherFocusSessionActive
+            return
+        } catch GestureSettingsError.couldNotRestore {
+            startError = .gestureRestoreRequired
+            return
+        } catch {
+            startError = .gestureSettingsUnavailable
+            return
+        }
         guard Self.installInputTaps(using: installEventTap) else {
-            startError = .inputUnavailable
+            Self.logger.error("Required keyboard filter could not be installed")
+            if restoreGestureSettings() { startError = .inputUnavailable }
             return
         }
 
@@ -136,6 +179,8 @@ class LockManager: ObservableObject {
         timeRemaining = duration
         startError = nil
         isLocked = true
+        receivedKeyboardInput = false
+        Self.logger.notice("Focus session started with \(self.eventTaps.count) input filters")
         startTimer()
     }
 
@@ -155,6 +200,20 @@ class LockManager: ObservableObject {
         tearDown()
     }
 
+    @discardableResult
+    func restoreGestureSettings() -> Bool {
+        do {
+            try gestureSettings.restoreHorizontalSpaceSwipes()
+            if startError == .gestureRestoreRequired { startError = nil }
+            return true
+        } catch GestureSettingsError.anotherSessionActive {
+            startError = .anotherFocusSessionActive
+        } catch {
+            startError = .gestureRestoreRequired
+        }
+        return false
+    }
+
     // Called from the CGEventTap C callback
     func filterEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         // Re-enable tap if system disabled it (e.g. after timeout)
@@ -167,7 +226,14 @@ class LockManager: ObservableObject {
 
         guard isLocked else { return Unmanaged.passUnretained(event) }
 
-        if shouldBlockKeyboardShortcut(type: type, event: event) { return nil }
+        if type == .keyDown, !receivedKeyboardInput {
+            receivedKeyboardInput = true
+            Self.logger.notice("Keyboard filter received its first event")
+        }
+        if shouldBlockKeyboardShortcut(type: type, event: event) {
+            Self.logger.notice("Blocked a desktop keyboard shortcut")
+            return nil
+        }
         if shouldBlockMissionControlButton(type: type, event: event) { return nil }
         if shouldBlockTrackpadSwipe(type: type, event: event) { return nil }
 
@@ -211,11 +277,13 @@ class LockManager: ObservableObject {
     }
 
     private func tearDown() {
+        if isLocked { Self.logger.notice("Focus session ended") }
         isLocked = false
         session = nil
         timeRemaining = 0
         penaltyCooldown = 0
         spaceRecoveryFailed = false
+        keyboardBlockingUnavailable = false
         timer?.invalidate()
         timer = nil
         spaceRecovery.cancel()
@@ -241,6 +309,7 @@ class LockManager: ObservableObject {
         // Hide instead of close — isReleasedWhenClosed=false means ARC handles release
         anchorWindow?.orderOut(nil)
         anchorWindow = nil
+        restoreGestureSettings()
     }
 
     // Visible "LOCKED" badge in the corner — this is what we snap back to
@@ -255,7 +324,9 @@ class LockManager: ObservableObject {
             backing: .buffered,
             defer: false
         )
-        window.level = .floating
+        // Space activation follows ordinary document windows. Floating windows and
+        // the all-Spaces menu panel must not determine the recovery destination.
+        window.level = .normal
         window.backgroundColor = .clear
         window.isOpaque = false
         window.hasShadow = false
@@ -286,20 +357,24 @@ class LockManager: ObservableObject {
 
     private func recoverAnchorSpace() {
         guard isLocked, let window = anchorWindow else { return }
+        Self.logger.notice("Space changed, anchor on active Space: \(window.isOnActiveSpace)")
         spaceRecovery.recoverIfNeeded(
             isOnTargetSpace: { [weak window] in window?.isOnActiveSpace ?? true },
             returnToTargetSpace: { [weak window] in
                 guard let window else { return }
+                Self.logger.notice("Requesting return to anchor Space")
+                window.makeMain()
                 window.makeKeyAndOrderFront(nil)
-                if #available(macOS 14, *) {
-                    NSApp.activate()
-                } else {
+                let accepted = NSRunningApplication.current.activate(options: [.activateAllWindows])
+                Self.logger.notice("Window activation request accepted: \(accepted)")
+                if !accepted {
                     NSApp.activate(ignoringOtherApps: true)
                 }
             },
             didFinish: { [weak self] returnedToTarget in
                 guard let self, self.isLocked else { return }
                 let failed = !returnedToTarget
+                Self.logger.notice("Space recovery finished, success: \(returnedToTarget)")
                 if self.spaceRecoveryFailed != failed {
                     self.spaceRecoveryFailed = failed
                 }
@@ -365,6 +440,11 @@ class LockManager: ObservableObject {
 
     private func tick(at now: ContinuousClock.Instant) {
         guard let session else { return }
+        let secureInput = IsSecureEventInputEnabled()
+        if secureInput != keyboardBlockingUnavailable {
+            keyboardBlockingUnavailable = secureInput
+            Self.logger.notice("Keyboard blocking unavailable: \(secureInput)")
+        }
         let remaining = session.remaining(at: now)
         guard remaining > 0 else {
             tearDown()

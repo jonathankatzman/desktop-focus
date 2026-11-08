@@ -100,7 +100,11 @@ final class FocusInputFilterTests: XCTestCase {
     }
 
     func testPassingThroughOriginalEventDoesNotRetainIt() throws {
-        let manager = LockManager()
+        let journal = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathComponent("settings.json")
+        let gestures = SystemGestureSettings(preferences: TestGesturePreferences(values: [:]),
+                                            journalURL: journal, activate: { true })
+        let manager = LockManager(gestureSettings: gestures)
         let event = try XCTUnwrap(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true))
         let retainCount = CFGetRetainCount(event)
 

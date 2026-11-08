@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Combine
+import Darwin
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
@@ -8,8 +9,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var panelEventMonitor: Any?
     private var lockManager = LockManager()
     private var cancellables = Set<AnyCancellable>()
+    private var terminationSignal: DispatchSourceSignal?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Restore temporary settings even when the process is stopped by an updater.
+        signal(SIGTERM, SIG_IGN)
+        let terminationSignal = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        terminationSignal.setEventHandler { [weak self] in
+            self?.lockManager.forceUnlock()
+            NSApp.terminate(nil)
+        }
+        self.terminationSignal = terminationSignal
+        terminationSignal.resume()
         if let iconURL = Bundle.main.url(forResource: "DesktopFocus", withExtension: "icns"),
            let icon = NSImage(contentsOf: iconURL) {
             NSApp.applicationIconImage = icon
@@ -24,14 +35,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         updateStatusIcon(isLocked: false)
 
-        lockManager.$isLocked.combineLatest(lockManager.$startError, lockManager.$spaceRecoveryFailed)
+        lockManager.$isLocked.combineLatest(
+            lockManager.$startError, lockManager.$spaceRecoveryFailed, lockManager.$keyboardBlockingUnavailable
+        )
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] isLocked, _, recoveryFailed in
+            .sink { [weak self] isLocked, _, recoveryFailed, keyboardUnavailable in
                 self?.updateStatusIcon(isLocked: isLocked)
-                self?.statusItem?.button?.toolTip = recoveryFailed ? "Couldn’t return to the locked Space" : nil
+                if keyboardUnavailable {
+                    self?.statusItem?.button?.toolTip = "Keyboard blocking is unavailable during protected password input"
+                } else {
+                    self?.statusItem?.button?.toolTip = recoveryFailed ? "Couldn’t return to the locked Space" : nil
+                }
                 self?.repositionPanelIfNeeded()
             }
             .store(in: &cancellables)
+
+        DispatchQueue.main.async { [weak self] in
+            self?.showControlPanel()
+        }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showControlPanel()
+        return false
+    }
+
+    private func showControlPanel() {
+        guard let button = statusItem?.button else { return }
+        showPanel(anchoredTo: button)
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -50,6 +81,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return .terminateNow
         }
         return .terminateCancel
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        lockManager.forceUnlock()
     }
 
     private func updateStatusIcon(isLocked: Bool) {
@@ -125,7 +160,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let width: CGFloat = 332
         let height: CGFloat
         if lockManager.isLocked {
-            height = lockManager.spaceRecoveryFailed ? 484 : 420
+            height = 420
+                + (lockManager.spaceRecoveryFailed ? 64 : 0)
+                + (lockManager.keyboardBlockingUnavailable ? 64 : 0)
         } else {
             height = lockManager.startError == nil ? 296 : 380
         }
@@ -144,7 +181,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
 private final class StatusPanel: NSPanel {
     override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
 }
 
 private struct PanelSurface: View {

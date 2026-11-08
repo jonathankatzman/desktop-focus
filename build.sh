@@ -3,6 +3,7 @@ set -e
 
 APP_NAME="DesktopFocus"
 APP_BUNDLE="${APP_NAME}.app"
+SIGNING_IDENTITY="${CODE_SIGN_IDENTITY:--}"
 
 echo "==> Building ${APP_NAME}..."
 swift build -c release 2>&1
@@ -17,8 +18,8 @@ cp Info.plist "${APP_BUNDLE}/Contents/"
 cp Assets/DesktopFocus.icns "${APP_BUNDLE}/Contents/Resources/"
 xattr -cr "${APP_BUNDLE}" 2>/dev/null || true
 
-echo "==> Signing (ad-hoc)..."
-codesign --force --sign - --entitlements entitlements.plist "${APP_BUNDLE}"
+echo "==> Signing..."
+codesign --force --sign "${SIGNING_IDENTITY}" --entitlements entitlements.plist "${APP_BUNDLE}"
 
 echo ""
 echo "Done!  ${APP_BUNDLE} is ready."
