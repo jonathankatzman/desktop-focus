@@ -285,7 +285,9 @@ class LockManager: ObservableObject {
             backing: .buffered,
             defer: false
         )
-        window.level = .floating
+        // Space activation follows ordinary document windows. Floating windows and
+        // the all-Spaces menu panel must not determine the recovery destination.
+        window.level = .normal
         window.backgroundColor = .clear
         window.isOpaque = false
         window.hasShadow = false
@@ -322,6 +324,7 @@ class LockManager: ObservableObject {
             returnToTargetSpace: { [weak window] in
                 guard let window else { return }
                 Self.logger.notice("Requesting return to anchor Space")
+                window.makeMain()
                 window.makeKeyAndOrderFront(nil)
                 let accepted = NSRunningApplication.current.activate(options: [.activateAllWindows])
                 Self.logger.notice("Window activation request accepted: \(accepted)")

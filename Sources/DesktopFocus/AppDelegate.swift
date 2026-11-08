@@ -38,6 +38,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.repositionPanelIfNeeded()
             }
             .store(in: &cancellables)
+
+        DispatchQueue.main.async { [weak self] in
+            self?.showControlPanel()
+        }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showControlPanel()
+        return false
+    }
+
+    private func showControlPanel() {
+        guard let button = statusItem?.button else { return }
+        showPanel(anchoredTo: button)
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -152,7 +166,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
 private final class StatusPanel: NSPanel {
     override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
 }
 
 private struct PanelSurface: View {
